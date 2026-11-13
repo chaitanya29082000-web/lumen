@@ -1736,6 +1736,30 @@ async def test_returns_a_model_from_a_matching_row(frame_source):
     assert answer.result == Total(category="B", total=20.0)
 
 
+async def test_returns_reads_a_model_the_llm_sends_as_a_json_string(frame_source):
+    """Some models put the nested object in a string even in a structured call."""
+    from pydantic import BaseModel
+
+    class Total(BaseModel):
+        category: str
+        total: float
+
+    class StringifyingLLM(_TypingLLM):
+        async def invoke(self, messages, system="", response_model=None, **kwargs):
+            if response_model is not None and response_model.__name__ == "Result":
+                # What the provider does with {"result": "{\"category\": ...}"}
+                return response_model.model_validate_json(
+                    json.dumps({"result": '{"category": "B", "total": 20.0}'})
+                )
+            return await super().invoke(messages, system, response_model, **kwargs)
+
+    llm = StringifyingLLM()
+    _sql_answer(llm, frame_source, "SELECT category, SUM(value) AS total FROM tiny GROUP BY category")
+    answer = await aask(frame_source, "?", llm=llm, agents=[ChatAgent(), SQLAgent()], returns=Total)
+    assert answer.status == "success"
+    assert answer.result == Total(category="B", total=20.0)
+
+
 async def test_returns_reads_the_type_from_the_answer_when_the_data_has_another_shape(frame_source):
     llm = _TypingLLM()
     llm.result = "B"

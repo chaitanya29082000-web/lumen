@@ -26,9 +26,9 @@ from contextlib import (
     ExitStack, contextmanager, nullcontext, suppress,
 )
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import hvplot.pandas  # noqa: F401  registers .hvplot, used by answer.map
 import nbformat
@@ -48,7 +48,7 @@ from panel_material_ui import (
     Alert, Button, Card, ChatInterface, Column, Row,
 )
 from panel_material_ui.chat import ChatMessage
-from pydantic import TypeAdapter, ValidationError, create_model
+from pydantic import BeforeValidator, TypeAdapter, ValidationError, create_model
 from sqlglot import exp
 
 from .. import __version__
@@ -521,6 +521,21 @@ def _shapes(df: pd.DataFrame | None) -> list:
     return shapes
 
 
+def _parse_json_string(value: Any, *, returns: Any) -> Any:
+    """
+    Parse a JSON string standing in for the object a type asks for.
+
+    Some models put a nested object in a string even in a structured call,
+    and pydantic does not read a string into a model, dict or list field.
+    Anything that is not JSON in the shape of the type is left alone, so a
+    plain string answer still reaches the type as it is.
+    """
+    if isinstance(value, str):
+        with suppress(ValidationError):
+            return TypeAdapter(returns).validate_json(value)
+    return value
+
+
 async def _typed(answer: Answer, returns: Any, llm: Llm) -> None:
     """
     Fill answer.result with the answer as the type asked for. A result
@@ -548,7 +563,10 @@ async def _typed(answer: Answer, returns: Any, llm: Llm) -> None:
             out = await llm.invoke(
                 [{"role": "user", "content": content}],
                 system=f"Give the answer as {name}, using only the answer and data given.",
-                response_model=create_model("Result", result=(returns, ...)),
+                response_model=create_model(
+                    "Result",
+                    result=(Annotated[returns, BeforeValidator(partial(_parse_json_string, returns=returns))], ...),
+                ),
             )
     except Exception as e:
         answer.param.update(status="error", error=f"The answer could not be read as {name}: {format_error(e)}")
